@@ -26,43 +26,50 @@ jobs:
       - name: Install deps
         run: pip install requests brotli
 
-      - name: Collect
+      - name: Collect all games
         run: |
           python - <<'EOF'
-          import gzip, json, datetime, os, requests
-          r = requests.get(
-              "https://api.skinport.com/v1/items",
-              params={"app_id": 730, "currency": "EUR", "tradable": 1},
-              headers={"Accept-Encoding": "br", "User-Agent": "SteamAi/0.1"},
-              timeout=30,
-          )
-          print("items:", r.status_code)
-          items = r.json() if r.status_code == 200 else None
+          import gzip, json, datetime, os, time, requests
 
-          r2 = requests.get(
-              "https://api.skinport.com/v1/sales/history",
-              headers={"Accept-Encoding": "br", "User-Agent": "SteamAi/0.1"},
-              timeout=30,
-          )
-          print("history:", r2.status_code)
-          history = r2.json() if r2.status_code == 200 else None
+          GAMES = {"cs2": 730, "dota2": 570, "tf2": 440, "rust": 252490}
+          UA = "SteamAi/0.1 (personal use)"
+          H = {"Accept-Encoding": "br", "User-Agent": UA}
 
           now = datetime.datetime.utcnow()
           day = now.strftime("%Y-%m-%d")
           stamp = now.strftime("%H%M")
 
-          snapshot = {
-              "ts": stamp, "day": day, "currency": "EUR", "app_id": 730,
-              "items": {"status": r.status_code, "data": items},
-              "history": {"status": r2.status_code, "data": history},
-          }
+          for game, app_id in GAMES.items():
+              r = requests.get(
+                  "https://api.skinport.com/v1/items",
+                  params={"app_id": app_id, "currency": "EUR", "tradable": 1},
+                  headers=H, timeout=30,
+              )
+              print(f"{game}: items status={r.status_code}")
+              items = r.json() if r.status_code == 200 else None
+              time.sleep(1)
 
-          out_dir = f"data-repo/raw/{day}"
-          os.makedirs(out_dir, exist_ok=True)
-          out = f"{out_dir}/skinport-{stamp}.json.gz"
-          with gzip.open(out, "wt", encoding="utf-8") as f:
-              json.dump(snapshot, f, ensure_ascii=False)
-          print("saved:", out, "records:", len(items or []))
+              r2 = requests.get(
+                  "https://api.skinport.com/v1/sales/history",
+                  headers=H, timeout=30,
+              )
+              print(f"{game}: history status={r2.status_code}")
+              history = r2.json() if r2.status_code == 200 else None
+              time.sleep(1)
+
+              snap = {
+                  "game": game, "app_id": app_id, "ts": stamp, "day": day,
+                  "currency": "EUR",
+                  "items": {"status": r.status_code, "data": items},
+                  "history": {"status": r2.status_code, "data": history},
+              }
+              out_dir = f"data-repo/raw/{day}"
+              os.makedirs(out_dir, exist_ok=True)
+              out = f"{out_dir}/{game}-{stamp}.json.gz"
+              with gzip.open(out, "wt", encoding="utf-8") as f:
+                  json.dump(snap, f, ensure_ascii=False)
+              n = len(items or [])
+              print(f"saved {out}, items={n}")
           EOF
 
       - name: Commit and push

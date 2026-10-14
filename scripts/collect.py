@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Частый сбор Skinport. Пишет снимок в data/raw/YYYY-MM-DD/skinport-HHMM.json.gz."""
+"""Сбор Skinport по всем играм. Пишет снимок в data/raw/YYYY-MM-DD/<game>-HHMM.json.gz."""
 from __future__ import annotations
 
 import argparse
@@ -10,26 +10,23 @@ import time
 
 from common import date_str, day_raw_dir, fetch_skinport_history, fetch_skinport_items, time_str
 
+# Игры и их app_id
+GAMES = {
+    "cs2":   730,
+    "dota2": 570,
+    "tf2":   440,
+    "rust":  252490,
+}
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--currency", default="EUR")
-    ap.add_argument("--app-id", type=int, default=730)
-    args = ap.parse_args()
 
-    day = date_str()
-    stamp = time_str()
-    out_dir = day_raw_dir(day)
-
-    items_resp = fetch_skinport_items(currency=args.currency, app_id=args.app_id)
+def collect_game(game: str, app_id: int, currency: str) -> dict:
+    items_resp = fetch_skinport_items(currency=currency, app_id=app_id)
     time.sleep(1)
     hist_resp = fetch_skinport_history()
 
-    snapshot = {
-        "ts": stamp,
-        "day": day,
-        "currency": args.currency,
-        "app_id": args.app_id,
+    return {
+        "game": game,
+        "app_id": app_id,
         "items": {
             "status": items_resp.status_code,
             "data": items_resp.json() if items_resp.status_code == 200 else None,
@@ -40,17 +37,39 @@ def main() -> int:
         },
     }
 
-    out = out_dir / f"skinport-{stamp}.json.gz"
-    with gzip.open(out, "wt", encoding="utf-8") as f:
-        json.dump(snapshot, f, ensure_ascii=False)
 
-    n_items = len(snapshot["items"]["data"] or []) if snapshot["items"]["data"] else 0
-    n_hist = len(snapshot["history"]["data"] or []) if snapshot["history"]["data"] else 0
-    mb = out.stat().st_size / 1024 / 1024
-    print(f"[{day} {stamp}] items={items_resp.status_code}/{n_items} "
-          f"history={hist_resp.status_code}/{n_hist} -> {out.name} ({mb:.2f} MB)")
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--currency", default="EUR")
+    ap.add_argument("--game", default="all",
+                    help="cs2 | dota2 | tf2 | rust | all")
+    args = ap.parse_args()
 
-    return 0 if items_resp.status_code == 200 else 1
+    day = date_str()
+    stamp = time_str()
+    out_dir = day_raw_dir(day)
+
+    games = GAMES if args.game == "all" else {args.game: GAMES[args.game]}
+
+    results = []
+    for game, app_id in games.items():
+        snap = collect_game(game, app_id, args.currency)
+        snap["ts"] = stamp
+        snap["day"] = day
+        snap["currency"] = args.currency
+
+        out = out_dir / f"{game}-{stamp}.json.gz"
+        with gzip.open(out, "wt", encoding="utf-8") as f:
+            json.dump(snap, f, ensure_ascii=False)
+
+        n_items = len(snap["items"]["data"] or []) if snap["items"]["data"] else 0
+        mb = out.stat().st_size / 1024 / 1024
+        print(f"[{day} {stamp}] {game:6} items={snap['items']['status']}/{n_items} "
+              f"history={snap['history']['status']} -> {out.name} ({mb:.2f} MB)")
+
+        results.append(snap["items"]["status"] == 200)
+
+    return 0 if all(results) else 1
 
 
 if __name__ == "__main__":

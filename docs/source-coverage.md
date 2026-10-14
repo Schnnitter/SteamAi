@@ -11,3 +11,9 @@
 
 - Не проверено: Skinport из Codespaces и GitHub Actions.
 - Не проверено: Steam с домашнего IP.
+## Проверки
+
+2026-10-14 — Collect Skinport из GitHub Actions:
+  status: 200, records: 25148
+  снимок залит в steamai-data/raw/2026-10-14/skinport-1319.json.gz
+  GitHub не отображает .gz в браузере — это нормально.
