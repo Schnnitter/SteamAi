@@ -1,0 +1,126 @@
+name: Daily Report
+
+on:
+  schedule:
+    - cron: "30 20 * * *"
+  workflow_dispatch:
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Checkout data repo
+        uses: actions/checkout@v4
+        with:
+          repository: Schnnitter/steamai-data
+          token: ${{ secrets.DATA_REPO_PAT }}
+          path: data-repo
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install requests brotli
+
+      - name: Aggregate and cleanup
+        run: |
+          python - <<'EOF'
+          import gzip, json, csv, datetime, pathlib, shutil
+
+          DATA = pathlib.Path("data-repo")
+          RAW = DATA / "raw"
+          DAILY = DATA / "daily"
+          LOGS = DATA / "logs"
+          DAILY.mkdir(exist_ok=True)
+          LOGS.mkdir(exist_ok=True)
+
+          today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+          day_dir = RAW / today
+          if not day_dir.exists():
+              print("no raw for today"); raise SystemExit(0)
+
+          snaps = []
+          for f in sorted(day_dir.glob("skinport-*.json.gz")):
+              try:
+                  with gzip.open(f, "rt", encoding="utf-8") as fh:
+                      snaps.append(json.load(fh))
+              except Exception:
+                  pass
+          print("snapshots:", len(snaps))
+
+          agg = {}
+          for s in snaps:
+              for row in (s.get("items") or {}).get("data") or []:
+                  name = row.get("market_hash_name")
+                  if not name: continue
+                  rec = agg.setdefault(name, {
+                      "market_hash_name": name,
+                      "min_price_first": row.get("min_price"),
+                      "min_price_last": row.get("min_price"),
+                      "min_price_min": row.get("min_price"),
+                      "min_price_max": row.get("min_price"),
+                      "quantity_last": row.get("quantity"),
+                      "appearances": 0,
+                  })
+                  mp = row.get("min_price")
+                  if mp is not None:
+                      if rec["min_price_min"] is None or mp < rec["min_price_min"]:
+                          rec["min_price_min"] = mp
+                      if rec["min_price_max"] is None or mp > rec["min_price_max"]:
+                          rec["min_price_max"] = mp
+                      rec["min_price_last"] = mp
+                  rec["quantity_last"] = row.get("quantity")
+                  rec["appearances"] += 1
+
+          rows = list(agg.values())
+          one = len(snaps) < 2
+          for r in rows:
+              if one or r["appearances"] < 2:
+                  r["change_pct"] = None; continue
+              f, l = r["min_price_first"], r["min_price_last"]
+              r["change_pct"] = round((l - f) / f * 100, 2) if f and l and f > 0 else None
+
+          fields = ["market_hash_name","min_price_first","min_price_last",
+                    "min_price_min","min_price_max","quantity_last",
+                    "appearances","change_pct"]
+          with (DAILY / f"{today}.csv").open("w", encoding="utf-8", newline="") as fh:
+              w = csv.DictWriter(fh, fieldnames=fields)
+              w.writeheader()
+              for r in rows:
+                  w.writerow({k: r.get(k) for k in fields})
+
+          top = sorted([r for r in rows if r.get("change_pct")],
+                       key=lambda r: abs(r["change_pct"]), reverse=True)[:3]
+          lines = [
+              f"{today} | cloud collect",
+              f"Snapshots: {len(snaps)}",
+              f"Items aggregated: {len(rows)}",
+              "Top-3 volatility:",
+          ]
+          for r in top:
+              lines.append(f"  {r['market_hash_name']}: {r['change_pct']:+.2f}%")
+          (LOGS / f"{today}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          print("daily csv + log written")
+
+          cutoff = datetime.date.today() - datetime.timedelta(days=7)
+          for d in RAW.iterdir():
+              if not d.is_dir(): continue
+              try: dd = datetime.date.fromisoformat(d.name)
+              except ValueError: continue
+              if dd < cutoff:
+                  shutil.rmtree(d)
+                  print("removed:", d)
+          EOF
+
+      - name: Commit and push
+        run: |
+          cd data-repo
+          git config user.name "SteamAi Bot"
+          git config user.email "steamai@local"
+          git add -A
+          git commit -m "daily $(date -u +%Y-%m-%d)" || echo "nothing to commit"
+          git push
