@@ -23,7 +23,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Aggregate and cleanup
+      - name: Install deps
+        run: pip install requests brotli
+
+      - name: Aggregate, build index, cleanup
         run: |
           python - <<'EOF'
           import gzip, json, csv, datetime, pathlib, shutil
@@ -87,7 +90,7 @@ jobs:
                   f, l = r["min_price_first"], r["min_price_last"]
                   r["change_pct"] = round((l - f) / f * 100, 2) if f and l and f > 0 else None
               all_rows.extend(rows)
-              per_game[game] = {"snaps": len(snaps), "items": len(rows)}
+              per_game[game] = {"snaps": len(snaps), "items": len(rows), "snaps_list": snaps}
               print(f"{game}: snapshots={len(snaps)} items={len(rows)}")
 
           fields = ["game","market_hash_name","min_price_first","min_price_last",
@@ -104,6 +107,51 @@ jobs:
               lines.append(f"{g.upper()}: snapshots={i['snaps']} items={i['items']}")
           (LOGS / f"{today}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+          # ─── index.json ───
+          index_items = []
+          ts_global = None
+          currency = "EUR"
+          for game in GAMES:
+              snaps = per_game[game]["snaps_list"]
+              if not snaps: continue
+              last = snaps[-1]
+              ts_global = last.get("ts") or ts_global
+              currency = last.get("currency", "EUR")
+              daily_map = {r["market_hash_name"]: r for r in all_rows if r["game"] == game}
+              for it in (last.get("items") or {}).get("data") or []:
+                  name = it.get("market_hash_name")
+                  if not name: continue
+                  drow = daily_map.get(name, {})
+                  def fnum(v):
+                      try: return float(v) if v not in (None, "", "None") else None
+                      except (ValueError, TypeError): return None
+                  index_items.append({
+                      "name": name,
+                      "game": game,
+                      "min_price": fnum(it.get("min_price")) or fnum(drow.get("min_price_last")),
+                      "max_price": fnum(it.get("max_price")) or fnum(drow.get("min_price_max")),
+                      "mean_price": fnum(it.get("mean_price")),
+                      "quantity": it.get("quantity"),
+                      "change_pct": fnum(drow.get("change_pct")),
+                      "day": today,
+                      "ts": last.get("ts"),
+                  })
+
+          index_items.sort(key=lambda x: (x["game"], x["name"]))
+          index_data = {
+              "generated": today,
+              "ts": ts_global,
+              "currency": currency,
+              "count": len(index_items),
+              "items": index_items,
+          }
+          (DATA / "index.json").write_text(
+              json.dumps(index_data, ensure_ascii=False, separators=(",", ":")),
+              encoding="utf-8",
+          )
+          print(f"index.json: {len(index_items)} items")
+
+          # ─── cleanup ───
           cutoff = datetime.date.today() - datetime.timedelta(days=7)
           for d in RAW.iterdir():
               if not d.is_dir(): continue
