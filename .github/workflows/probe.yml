@@ -1,0 +1,38 @@
+name: Probe Skinport
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install requests brotli
+
+      - name: Probe Skinport items
+        run: |
+          python - <<'EOF'
+          import requests
+          r = requests.get(
+              "https://api.skinport.com/v1/items",
+              params={"app_id": 730, "currency": "EUR", "tradable": 1},
+              headers={"Accept-Encoding": "br", "User-Agent": "SteamAi-probe/0.1"},
+              timeout=30,
+          )
+          print("status:", r.status_code)
+          print("encoding:", r.headers.get("Content-Encoding"))
+          try:
+              data = r.json()
+              print("records:", len(data) if isinstance(data, list) else "not list")
+              if isinstance(data, list) and data:
+                  print("sample:", data[0].get("market_hash_name"))
+          except Exception as e:
+              print("json error:", e)
+              print("body:", r.text[:300])
+          EOF
